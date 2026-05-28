@@ -24,6 +24,21 @@ from prismatic.vla.datasets.rlds import make_interleaved_dataset, make_single_da
 from prismatic.vla.datasets.rlds.oxe import OXE_NAMED_MIXTURES, get_oxe_dataset_kwargs_and_weights
 
 @dataclass
+class RLDSValueBatchTransform:
+    def __call__(self, rlds_batch: Dict[str, Any]) -> Dict[str, Any]:
+        """Return one current-frame value example without action-token targets."""
+        return {
+            "image_primary": Image.fromarray(rlds_batch["observation"]["image_primary"][0]),
+            "image_wrist": Image.fromarray(rlds_batch["observation"]["image_wrist"][0]),
+            "language_instruction": rlds_batch["task"]["language_instruction"].decode().lower(),
+            "proprio": torch.as_tensor(rlds_batch["observation"]["proprio"][0], dtype=torch.float32),
+            "reward": torch.as_tensor(rlds_batch["reward"], dtype=torch.float32).squeeze(),
+            "return_to_go": torch.as_tensor(rlds_batch["return_to_go"], dtype=torch.float32).squeeze(),
+            "dataset_name": rlds_batch["dataset_name"],
+        }
+
+
+@dataclass
 class RLDSBatchTransform:
     action_tokenizer: ActionTokenizer
     base_tokenizer: PreTrainedTokenizerBase
@@ -101,6 +116,9 @@ class RLDSDataset(IterableDataset):
         shuffle_buffer_size: int = 256_000,
         train: bool = True,
         image_aug: bool = False,
+        future_action_window_size: int = NUM_ACTIONS_CHUNK - 1,
+        include_value_targets: bool = False,
+        goal_relabeling_strategy: str | None = "uniform",
     ) -> None:
         """Lightweight wrapper around RLDS TFDS Pipeline for use with PyTorch/OpenVLA Data Loaders."""
         self.data_root_dir, self.data_mix, self.batch_transform = data_root_dir, data_mix, batch_transform
@@ -127,12 +145,15 @@ class RLDSDataset(IterableDataset):
             load_language=True,
             action_proprio_normalization_type=ACTION_PROPRIO_NORMALIZATION_TYPE,
         )
+        if include_value_targets:
+            for dataset_kwargs in per_dataset_kwargs:
+                dataset_kwargs["include_value_targets"] = True
         rlds_config = dict(
             traj_transform_kwargs=dict(
                 window_size=1,                                      # If we wanted to feed / predict more than one step
-                future_action_window_size=NUM_ACTIONS_CHUNK-1,      # For action chunking
+                future_action_window_size=future_action_window_size,
                 skip_unlabeled=True,                                # Skip trajectories without language labels
-                goal_relabeling_strategy="uniform",                 # Goals are currently unused
+                goal_relabeling_strategy=goal_relabeling_strategy,
             ),
             frame_transform_kwargs=dict(
                 resize_size=resize_resolution,
@@ -181,6 +202,33 @@ class RLDSDataset(IterableDataset):
     # === Explicitly Unused ===
     def __getitem__(self, idx: int) -> None:
         raise NotImplementedError("IterableDataset does not implement map-style __getitem__; see __iter__ instead!")
+
+
+class RLDSValueDataset(RLDSDataset):
+    """RLDS stream for value targets, with one current observation per example."""
+
+    def __init__(
+        self,
+        data_root_dir: Path,
+        data_mix: str,
+        batch_transform: RLDSValueBatchTransform,
+        resize_resolution: Tuple[int, int],
+        shuffle_buffer_size: int = 256_000,
+        train: bool = True,
+        image_aug: bool = False,
+    ) -> None:
+        super().__init__(
+            data_root_dir,
+            data_mix,
+            batch_transform,
+            resize_resolution,
+            shuffle_buffer_size=shuffle_buffer_size,
+            train=train,
+            image_aug=image_aug,
+            future_action_window_size=0,
+            include_value_targets=True,
+            goal_relabeling_strategy=None,
+        )
 
 
 class EpisodicRLDSDataset(RLDSDataset):

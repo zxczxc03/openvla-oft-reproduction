@@ -46,6 +46,15 @@ BRIDGE_CONSTANTS = {
 
 
 # Function to detect robot platform from command line arguments
+# sys.argv 是保存命令行参数的列表，比如输入 python train.py --dataset libero_spatial --model openvla
+# sys.argv = [
+#     "train.py",
+#     "--dataset",
+#     "libero_spatial",
+#     "--model",
+#     "openvla"
+# ]
+
 def detect_robot_platform():
     cmd_args = " ".join(sys.argv).lower()
 

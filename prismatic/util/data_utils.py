@@ -5,7 +5,7 @@ General utilities and classes for facilitating data loading and collation.
 """
 
 from dataclasses import dataclass
-from typing import Callable, Dict, Sequence, Tuple
+from typing import Callable, Dict, Sequence, Tuple, Any
 
 import numpy as np
 import torch
@@ -90,6 +90,89 @@ class PaddedCollatorForLanguageModeling:
             labels=labels,
             multimodal_indices=multimodal_indices,
         )
+
+
+@dataclass
+class PaddedCollatorForValueFunction:
+
+    processor: Any
+    max_length: int = 512
+    num_proprio_tokens: int = 1
+
+    def build_prompt(self, language_instruction):
+
+        proprio_tokens = " ".join(
+            [f"<proprio_{i}>" for i in range(self.num_proprio_tokens)]
+        )
+
+        question = f"""You are a robot value estimator.
+
+        Task:
+        {language_instruction}
+
+        Current robot proprioception is represented by the following learned tokens:
+        {proprio_tokens}
+
+        Estimate the scaled return-to-go for the current state.
+        Values closer to 0 indicate fewer remaining penalties before task completion;
+        more negative values indicate a less promising state."""
+
+        content = [
+            {"type": "image"},
+            {"type": "image"},
+        ]
+
+        content.append({"type": "text", "text": question})
+
+        return [
+            {
+                "role": "user",
+                "content": content,
+            }
+        ]
+
+    def _decode_text(self, x):
+        if isinstance(x, bytes):
+            return x.decode("utf-8")
+        return str(x)
+
+    def __call__(self, instances: Sequence[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+
+        prompts = []
+        images = []
+        proprios = []
+        value_labels = []
+
+        for instance in instances:
+            image_primary = instance["image_primary"]
+            image_wrist = instance["image_wrist"]
+            image = [image_primary, image_wrist]
+            proprio = instance["proprio"]
+            value_label = instance["return_to_go"]
+            language_instruction = self._decode_text(instance["language_instruction"])
+
+            messages = self.build_prompt(language_instruction)
+            prompt = self.processor.apply_chat_template(messages, add_generation_prompt=True)
+            prompts.append(prompt)
+            images.append(image)
+            proprios.append(torch.as_tensor(proprio, dtype=torch.float32))
+            value_labels.append(torch.as_tensor(value_label, dtype=torch.float32))
+
+        inputs = self.processor(
+            text=prompts,
+            images=images,
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True,
+            max_length=self.max_length,
+        )
+
+        inputs["proprio"] = torch.stack(proprios, dim=0)
+        inputs["value_label"] = torch.stack(value_labels, dim=0).reshape(-1, 1)
+
+        return inputs
+
+
 
 
 @dataclass

@@ -63,9 +63,11 @@ def update_auto_map(pretrained_checkpoint: str) -> None:
     Args:
         pretrained_checkpoint: Path to the checkpoint directory
     """
+    # 检查是否是个目录
     if not os.path.isdir(pretrained_checkpoint):
         return
 
+    # 找config.json
     config_path = os.path.join(pretrained_checkpoint, "config.json")
     if not os.path.exists(config_path):
         print(f"Warning: No config.json found at {config_path}")
@@ -181,6 +183,7 @@ def check_model_logic_mismatch(pretrained_checkpoint: str) -> None:
         return
 
     # Find current files
+    # 在当前项目里搜索 modeling_prismatic.py 以及 configuration_prismatic.py      
     curr_files = {"modeling_prismatic.py": None, "configuration_prismatic.py": None}
 
     for root, _, files in os.walk("./prismatic/"):
@@ -189,6 +192,7 @@ def check_model_logic_mismatch(pretrained_checkpoint: str) -> None:
                 curr_files[filename] = os.path.join(root, filename)
 
     # Check and handle each file
+    
     for filename, curr_filepath in curr_files.items():
         if curr_filepath is None:
             print(f"WARNING: `{filename}` is not found anywhere in the current directory.")

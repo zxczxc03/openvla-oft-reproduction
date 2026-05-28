@@ -224,6 +224,7 @@ def count_parameters(module: nn.Module, name: str) -> None:
     Returns:
         None.
     """
+    # torch numel 计算元素个数
     num_params = sum(p.numel() for p in module.parameters() if p.requires_grad)
     print(f"# trainable params in {name}: {num_params}")
 
@@ -772,6 +773,7 @@ def finetune(cfg: FinetuneConfig) -> None:
     )
 
     # Trim trailing forward slash ('/') in VLA path if it exists
+    # 删除末尾的特定字符
     cfg.vla_path = cfg.vla_path.rstrip("/")
     print(f"Fine-tuning OpenVLA Model `{cfg.vla_path}` on `{cfg.dataset_name}`")
 
@@ -861,6 +863,7 @@ def finetune(cfg: FinetuneConfig) -> None:
         # Important: For this, must specify `vla.model.vision_backbone` instead of just `vla.vision_backbone`, since the
         # latter would cause the new wrapped backbone to be saved as a new attribute of `vla` instead of overwriting the
         # original one (due to the LoRA wrapper)
+        # TODO: 有空看看这部分的实现
         vla.model.vision_backbone = FiLMedPrismaticVisionBackbone(
             vision_backbone=vla.model.vision_backbone,
             llm_dim=vla.llm_dim,

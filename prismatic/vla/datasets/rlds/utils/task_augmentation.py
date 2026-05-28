@@ -16,6 +16,8 @@ def delete_task_conditioning(traj: Dict, keep_image_prob: float) -> Dict:
     Randomly drops out either the goal images or the language instruction. Only does something if both of
     these are present.
 
+    如果一条 trajectory 的 task 里同时有语言指令和 goal image/depth，那么训练时随机只保留其中一种：要么保留 goal image/depth，要么保留 language instruction。
+
     Args:
         traj: A dictionary containing trajectory data. Should have a "task" key.
         keep_image_prob: The probability of keeping the goal images. The probability of keeping the language
@@ -26,13 +28,14 @@ def delete_task_conditioning(traj: Dict, keep_image_prob: float) -> Dict:
 
     image_keys = {key for key in traj["task"].keys() if key.startswith("image_") or key.startswith("depth_")}
     if not image_keys:
-        return traj
+        return traj 
 
     traj_len = tf.shape(traj["action"])[0]
     should_keep_images = tf.random.uniform([traj_len]) < keep_image_prob
     should_keep_images |= ~traj["task"]["pad_mask_dict"]["language_instruction"]
 
     for key in image_keys | {"language_instruction"}:
+        # 删除 image 或者 删除 language
         should_keep = should_keep_images if key in image_keys else ~should_keep_images
         # pad out the key
         traj["task"][key] = tf.where(

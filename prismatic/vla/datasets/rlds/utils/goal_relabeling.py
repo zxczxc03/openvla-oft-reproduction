@@ -13,6 +13,7 @@ from prismatic.vla.datasets.rlds.utils.data_utils import tree_merge
 
 
 def uniform(traj: Dict) -> Dict:
+    # 对一条 trajectory 里的每个时间步 i，随机选择一个未来时间步 j > i 作为 goal，然后把那个未来时间步的 observation 复制到当前时间步的 task 里面。
     """Relabels with a true uniform distribution over future states."""
     traj_len = tf.shape(tf.nest.flatten(traj["observation"])[0])[0]
 

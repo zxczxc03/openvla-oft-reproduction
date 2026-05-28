@@ -14,6 +14,7 @@ import tensorflow as tf
 def chunk_act_obs(traj: Dict, window_size: int, future_action_window_size: int = 0) -> Dict:
     """
     Chunks actions and observations into the given window_size.
+    把一条 trajectory 里的连续 observation 和 action，整理成“滑动窗口”的形式
 
     "observation" keys are given a new axis (at index 1) of size `window_size` containing `window_size - 1`
     observations from the past and the current observation. "action" is given a new axis (at index 1) of size
@@ -37,12 +38,14 @@ def chunk_act_obs(traj: Dict, window_size: int, future_action_window_size: int =
         [effective_traj_len, window_size + future_action_window_size],
     )
 
+    # 由于 负索引 的 obs 并不存在，所以用0来代替，后面会用 pad_mask 标记这些位置其实是 padding。
     floored_chunk_indices = tf.maximum(chunk_indices, 0)
 
     goal_timestep = tf.fill([effective_traj_len], traj_len - 1)
 
     floored_action_chunk_indices = tf.minimum(tf.maximum(action_chunk_indices, 0), goal_timestep[:, None])
 
+    # tf.nest.map_structure 对 dict 中 每个 key 的 value 都进行同样的操作
     traj["observation"] = tf.nest.map_structure(lambda x: tf.gather(x, floored_chunk_indices), traj["observation"])
     traj["action"] = tf.gather(traj["action"], floored_action_chunk_indices)
 
@@ -50,9 +53,13 @@ def chunk_act_obs(traj: Dict, window_size: int, future_action_window_size: int =
     traj["observation"]["pad_mask"] = chunk_indices >= 0
 
     # Truncate other elements of the trajectory dict
-    traj["task"] = tf.nest.map_structure(lambda x: tf.gather(x, tf.range(effective_traj_len)), traj["task"])
-    traj["dataset_name"] = tf.gather(traj["dataset_name"], tf.range(effective_traj_len))
-    traj["absolute_action_mask"] = tf.gather(traj["absolute_action_mask"], tf.range(effective_traj_len))
+    indices = tf.range(effective_traj_len)
+    traj["task"] = tf.nest.map_structure(lambda x: tf.gather(x, indices), traj["task"])
+    traj["dataset_name"] = tf.gather(traj["dataset_name"], indices)
+    traj["absolute_action_mask"] = tf.gather(traj["absolute_action_mask"], indices)
+    for key in ("reward", "return_to_go"):
+        if key in traj:
+            traj[key] = tf.gather(traj[key], indices)
 
     return traj
 
@@ -71,6 +78,7 @@ def add_pad_mask_dict(traj: Dict) -> Dict:
     """
     Adds a dictionary indicating which elements of the observation/task should be treated as padding.
         =>> traj["observation"|"task"]["pad_mask_dict"] = {k: traj["observation"|"task"][k] is not padding}
+    给一条 trajectory 的 observation 和 task 字典分别加一个 pad_mask_dict，用来标记每个字段在每个时间步上是不是“真实数据”，还是 padding / 空数据。
     """
     traj_len = tf.shape(traj["action"])[0]
 
@@ -88,3 +96,15 @@ def add_pad_mask_dict(traj: Dict) -> Dict:
         traj[key]["pad_mask_dict"] = pad_mask_dict
 
     return traj
+
+#     traj["observation"] = {
+#     "image_primary": ...,
+#     "image_wrist": ...,
+#     "proprio": ...,
+#     "pad_mask_dict": {
+#         "image_primary": Tensor(shape=(T,), dtype=bool),
+#         "image_wrist": Tensor(shape=(T,), dtype=bool),
+#         "proprio": Tensor(shape=(T,), dtype=bool),
+#     }
+# }
+#  T为序列长度

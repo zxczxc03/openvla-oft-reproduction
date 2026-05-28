@@ -734,12 +734,14 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
     def _prepare_input_for_action_prediction(self, input_ids, attention_mask):
         """Prepares input for action prediction by adding necessary tokens"""
         # Add (ACTION_DIM * NUM_ACTIONS_CHUNK) placeholder tokens to input_ids to simulate action tokens
+        # 引入empty action embeddings 
         placeholder_action_token_ids = (
             torch.ones((input_ids.shape[0], ACTION_DIM * NUM_ACTIONS_CHUNK)).to(input_ids.device).to(input_ids.dtype)
         )
         input_ids = torch.cat([input_ids, placeholder_action_token_ids], dim=-1)
 
         # Add stop token to sequence (needed in non-causal bi-directional self-attention, as it appears at train time)
+        # 由于训练的时候有stop token，所以推理的时候也需要加入，否则就和训练的时候的训练分布不一致，导致输出偏移。
         stop_token_id = torch.ones((input_ids.shape[0], 1)).to(input_ids.device).to(input_ids.dtype) * STOP_INDEX
         input_ids = torch.cat([input_ids, stop_token_id], dim=-1)
 
