@@ -99,7 +99,7 @@ class PaddedCollatorForValueFunction:
     max_length: int = 512
     num_proprio_tokens: int = 1
 
-    def build_prompt(self, language_instruction):
+    def build_messages(self, language_instruction):
 
         proprio_tokens = " ".join(
             [f"<proprio_{i}>" for i in range(self.num_proprio_tokens)]
@@ -151,7 +151,7 @@ class PaddedCollatorForValueFunction:
             value_label = instance["return_to_go"]
             language_instruction = self._decode_text(instance["language_instruction"])
 
-            messages = self.build_prompt(language_instruction)
+            messages = self.build_messages(language_instruction)
             prompt = self.processor.apply_chat_template(messages, add_generation_prompt=True)
             prompts.append(prompt)
             images.append(image)

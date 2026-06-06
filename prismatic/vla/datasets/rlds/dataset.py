@@ -16,7 +16,16 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 
 from prismatic.overwatch import initialize_overwatch
-from prismatic.vla.constants import ACTION_DIM, ACTION_PROPRIO_NORMALIZATION_TYPE, ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX, NUM_ACTIONS_CHUNK, PROPRIO_DIM, STOP_INDEX
+from prismatic.vla.constants import (
+    ACTION_DIM,
+    ACTION_PROPRIO_NORMALIZATION_TYPE,
+    ACTION_TOKEN_BEGIN_IDX,
+    IGNORE_INDEX,
+    NUM_ACTIONS_CHUNK,
+    PROPRIO_DIM,
+    STOP_INDEX,
+    NormalizationType,
+)
 from prismatic.vla.datasets.rlds import obs_transforms, traj_transforms
 from prismatic.vla.datasets.rlds.utils import goal_relabeling, task_augmentation
 from prismatic.vla.datasets.rlds.utils.data_utils import (
@@ -469,6 +478,35 @@ def make_single_dataset(
     return dataset, dataset_statistics["num_trajectories"], dataset_statistics
 
 
+def _share_bounds(all_dataset_statistics: Dict[str, Dict], statistic_key: str) -> None:
+    """Replace each dataset's min/max for one statistic with the elementwise bounds over the full mixture."""
+    dataset_names = list(all_dataset_statistics)
+    if not dataset_names:
+        raise ValueError(f"Cannot share {statistic_key} bounds across an empty dataset mixture.")
+
+    mins = [np.asarray(all_dataset_statistics[name][statistic_key]["min"]) for name in dataset_names]
+    maxs = [np.asarray(all_dataset_statistics[name][statistic_key]["max"]) for name in dataset_names]
+    shapes = {bounds.shape for bounds in mins + maxs}
+    if len(shapes) != 1:
+        raise ValueError(f"Cannot share {statistic_key} bounds across datasets with different shapes: {shapes}.")
+
+    shared_min = np.min(np.stack(mins), axis=0)
+    shared_max = np.max(np.stack(maxs), axis=0)
+    for statistics in all_dataset_statistics.values():
+        statistics[statistic_key]["min"] = shared_min.copy()
+        statistics[statistic_key]["max"] = shared_max.copy()
+
+    overwatch.info("Using shared %s bounds across mixture: min=%s, max=%s", statistic_key, shared_min, shared_max)
+
+
+def _add_shared_bounds_statistics(all_dataset_statistics: Dict[str, Dict]) -> None:
+    """Add an explicit statistics key for evaluation when action and proprio both use shared bounds."""
+    shared_statistics = copy.deepcopy(next(iter(all_dataset_statistics.values())))
+    shared_statistics["num_transitions"] = sum(stats["num_transitions"] for stats in all_dataset_statistics.values())
+    shared_statistics["num_trajectories"] = sum(stats["num_trajectories"] for stats in all_dataset_statistics.values())
+    all_dataset_statistics["shared_bounds"] = shared_statistics
+
+
 # === Core Initializer ===
 def make_interleaved_dataset(
     dataset_kwargs_list: List[Dict],
@@ -482,6 +520,8 @@ def make_interleaved_dataset(
     balance_weights: bool = False,
     traj_transform_threads: Optional[int] = None,
     traj_read_threads: Optional[int] = None,
+    use_shared_action_bounds: bool = False,
+    use_shared_proprio_bounds: bool = False,
 ) -> dl.DLataset:
     """
     Creates an interleaved dataset from list of dataset configs (kwargs). Returns a dataset of batched frames.
@@ -505,6 +545,10 @@ def make_interleaved_dataset(
             datasets according to their sampling weights. If None, defaults to AUTOTUNE for every dataset.
         traj_read_threads: total number of parallel read workers for trajectory transforms, distributed across
             datasets according to their sampling weights. If None, defaults to AUTOTUNE for every dataset.
+        use_shared_action_bounds: if True, normalize actions from every dataset with the elementwise min/max bounds
+            over the full mixture.
+        use_shared_proprio_bounds: if True, normalize proprio from every dataset with the elementwise min/max bounds
+            over the full mixture.
     """
     # Default to uniform sampling (if `sample_weights` is not specified)
     if not sample_weights:
@@ -526,6 +570,21 @@ def make_interleaved_dataset(
         _, dataset_statistics = make_dataset_from_rlds(**data_kwargs, train=train)
         dataset_sizes.append(dataset_statistics["num_transitions"])
         all_dataset_statistics[dataset_kwargs["name"]] = dataset_statistics
+
+    if use_shared_action_bounds or use_shared_proprio_bounds:
+        normalization_types = {
+            dataset_kwargs["action_proprio_normalization_type"] for dataset_kwargs in dataset_kwargs_list
+        }
+        if normalization_types != {NormalizationType.BOUNDS}:
+            raise ValueError(
+                f"Shared bounds require every dataset to use NormalizationType.BOUNDS; found {normalization_types}."
+            )
+    if use_shared_action_bounds:
+        _share_bounds(all_dataset_statistics, "action")
+    if use_shared_proprio_bounds:
+        _share_bounds(all_dataset_statistics, "proprio")
+    if use_shared_action_bounds and use_shared_proprio_bounds:
+        _add_shared_bounds_statistics(all_dataset_statistics)
 
     # Get the indices of the "primary" datasets (i.e., datasets with sample_weight == 1.0)
     primary_dataset_indices = np.array([idx for idx in range(len(sample_weights)) if sample_weights[idx] == 1.0])

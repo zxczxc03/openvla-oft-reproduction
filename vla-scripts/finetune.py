@@ -75,6 +75,8 @@ class FinetuneConfig:
     dataset_name: str = "aloha_scoop_x_into_bowl"    # Name of fine-tuning dataset (e.g., `aloha_scoop_x_into_bowl`)
     run_root_dir: Path = Path("runs")                # Path to directory to store logs & checkpoints
     shuffle_buffer_size: int = 100_000               # Dataloader shuffle buffer size (can reduce if OOM errors occur)
+    use_shared_action_bounds: bool = False           # Use mixture-wide action min/max
+    use_shared_proprio_bounds: bool = False          # Use mixture-wide proprio min/max
 
     # Algorithm and architecture
     use_l1_regression: bool = True                   # If True, trains continuous action head with L1 regression objective
@@ -985,6 +987,8 @@ def finetune(cfg: FinetuneConfig) -> None:
         resize_resolution=tuple(vla.module.config.image_sizes),
         shuffle_buffer_size=cfg.shuffle_buffer_size,
         image_aug=cfg.image_aug,
+        use_shared_action_bounds=cfg.use_shared_action_bounds,
+        use_shared_proprio_bounds=cfg.use_shared_proprio_bounds,
     )
     if cfg.use_val_set:
         val_dataset = RLDSDataset(
@@ -995,6 +999,8 @@ def finetune(cfg: FinetuneConfig) -> None:
             shuffle_buffer_size=cfg.shuffle_buffer_size // 10,
             image_aug=cfg.image_aug,
             train=False,
+            use_shared_action_bounds=cfg.use_shared_action_bounds,
+            use_shared_proprio_bounds=cfg.use_shared_proprio_bounds,
         )
 
     # [Important] Save dataset statistics so that we can unnormalize actions during inference

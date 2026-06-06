@@ -262,26 +262,51 @@ def get_dataset_statistics(
     return metadata
 
 
+def _json_safe(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
 def save_dataset_statistics(dataset_statistics, run_dir):
     """Saves a `dataset_statistics.json` file."""
     out_path = run_dir / "dataset_statistics.json"
     with open(out_path, "w") as f_json:
-        for _, stats in dataset_statistics.items():
-            for k in stats["action"].keys():
-                if isinstance(stats["action"][k], np.ndarray):
-                    stats["action"][k] = stats["action"][k].tolist()
-            if "proprio" in stats:
-                for k in stats["proprio"].keys():
-                    if isinstance(stats["proprio"][k], np.ndarray):
-                        stats["proprio"][k] = stats["proprio"][k].tolist()
-            if "num_trajectories" in stats:
-                if isinstance(stats["num_trajectories"], np.ndarray):
-                    stats["num_trajectories"] = stats["num_trajectories"].item()
-            if "num_transitions" in stats:
-                if isinstance(stats["num_transitions"], np.ndarray):
-                    stats["num_transitions"] = stats["num_transitions"].item()
-        json.dump(dataset_statistics, f_json, indent=2)
+        json.dump(_json_safe(dataset_statistics), f_json, indent=2)
     overwatch.info(f"Saved dataset statistics file at path {out_path}")
+
+
+
+# def save_dataset_statistics(dataset_statistics, run_dir):
+#     """Saves a `dataset_statistics.json` file."""
+#     out_path = run_dir / "dataset_statistics.json"
+#     with open(out_path, "w") as f_json:
+#         for _, stats in dataset_statistics.items():
+#             for k in stats["action"].keys():
+#                 if isinstance(stats["action"][k], np.ndarray):
+#                     stats["action"][k] = stats["action"][k].tolist()
+#             if "proprio" in stats:
+#                 for k in stats["proprio"].keys():
+#                     if isinstance(stats["proprio"][k], np.ndarray):
+#                         stats["proprio"][k] = stats["proprio"][k].tolist()
+#             if "num_trajectories" in stats:
+#                 if isinstance(stats["num_trajectories"], np.ndarray):
+#                     stats["num_trajectories"] = stats["num_trajectories"].item()
+#             if "num_transitions" in stats:
+#                 if isinstance(stats["num_transitions"], np.ndarray):
+#                     stats["num_transitions"] = stats["num_transitions"].item()
+#         json.dump(dataset_statistics, f_json, indent=2)
+#     overwatch.info(f"Saved dataset statistics file at path {out_path}")
 
 
 def allocate_threads(n: Optional[int], weights: np.ndarray):

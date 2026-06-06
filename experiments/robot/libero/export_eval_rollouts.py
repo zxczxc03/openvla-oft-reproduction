@@ -104,7 +104,7 @@ class GenerateConfig:
 
     lora_rank: int = 32                              # Rank of LoRA weight matrix (MAKE SURE THIS MATCHES TRAINING!)
 
-    unnorm_key: Union[str, Path] = ""                # Action un-normalization key
+    unnorm_key: Union[str, Path] = ""                # Action/proprio normalization statistics key
 
     load_in_8bit: bool = False                       # (For OpenVLA only) Load with 8-bit quantization
     load_in_4bit: bool = False                       # (For OpenVLA only) Load with 4-bit quantization
@@ -185,16 +185,24 @@ def initialize_model(cfg: GenerateConfig):
 
 
 def check_unnorm_key(cfg: GenerateConfig, model) -> None:
-    """Check that the model contains the action un-normalization key."""
-    # Initialize unnorm_key
-    unnorm_key = cfg.task_suite_name
+    """Select the action/proprio normalization statistics used during evaluation."""
+    # Prefer the explicit shared statistics emitted by mixed-dataset training.
+    if cfg.unnorm_key:
+        unnorm_key = str(cfg.unnorm_key)
+    elif "shared_bounds" in model.norm_stats:
+        unnorm_key = "shared_bounds"
+    else:
+        unnorm_key = cfg.task_suite_name
 
     # In some cases, the key must be manually modified (e.g. after training on a modified version of the dataset
     # with the suffix "_no_noops" in the dataset name)
     if unnorm_key not in model.norm_stats and f"{unnorm_key}_no_noops" in model.norm_stats:
         unnorm_key = f"{unnorm_key}_no_noops"
 
-    assert unnorm_key in model.norm_stats, f"Action un-norm key {unnorm_key} not found in VLA `norm_stats`!"
+    assert unnorm_key in model.norm_stats, (
+        f"Normalization statistics key {unnorm_key} not found in VLA `norm_stats`! "
+        f"Available keys: {list(model.norm_stats.keys())}"
+    )
 
     # Set the unnorm_key in cfg
     cfg.unnorm_key = unnorm_key
@@ -307,21 +315,18 @@ def get_episode_hdf5_path(cfg, task_description, task_id, episode_idx, success):
     unique_suffix = time.time_ns()
     episode_name = f"{timestamp}-{unique_suffix}--task={task_id}--ep={episode_idx}--{safe_task_name}"
 
-    if success:
-        episode_dir = os.path.join(output_dir, episode_name)
-        os.makedirs(episode_dir, exist_ok=True)
-        return os.path.join(episode_dir, "demo.hdf5")
-
-    os.makedirs(output_dir, exist_ok=True)
-    return os.path.join(output_dir, f"{episode_name}.hdf5")
+    episode_dir = os.path.join(output_dir, episode_name)
+    os.makedirs(episode_dir, exist_ok=True)
+    return os.path.join(episode_dir, "demo.hdf5")
 
 
-def write_regeneration_demo_group(hdf5_file, bddl_file, task_description, rollout):
+def write_regeneration_demo_group(hdf5_file, bddl_file, task_description, rollout, success):
     data_group = hdf5_file.create_group("data")
     data_group.attrs["bddl_file_name"] = bddl_file
     data_group.attrs["language_instruction"] = task_description
     data_group.attrs["num_demos"] = 1
     data_group.attrs["total"] = len(rollout["actions"])
+    data_group.attrs["success"] = bool(success)
 
     try:
         with open(bddl_file, "r", encoding="utf-8") as bddl_file_obj:
@@ -332,7 +337,11 @@ def write_regeneration_demo_group(hdf5_file, bddl_file, task_description, rollou
     demo_group = data_group.create_group("demo_0")
     demo_group.create_dataset("states", data=np.asarray(rollout["sim_states"], dtype=np.float64))
     demo_group.create_dataset("actions", data=np.asarray(rollout["actions"], dtype=np.float32))
+    demo_group.create_dataset("robot_states", data=np.asarray(rollout["robot_states"], dtype=np.float32))
+    demo_group.create_dataset("rewards", data=np.asarray(rollout["rewards"], dtype=np.float32))
+    demo_group.create_dataset("dones", data=np.asarray(rollout["dones"], dtype=np.bool_))
     demo_group.attrs["num_samples"] = len(rollout["actions"])
+    demo_group.attrs["success"] = bool(success)
 
 
 def get_robot_state_from_obs(obs):
@@ -403,8 +412,7 @@ def save_episode_hdf5(
         f.create_dataset("robot_states", data=np.asarray(rollout["robot_states"], dtype=np.float32))
         f.create_dataset("rewards", data=np.asarray(rollout["rewards"], dtype=np.float32))
         f.create_dataset("dones", data=np.asarray(rollout["dones"], dtype=np.bool_))
-        if success:
-            write_regeneration_demo_group(f, bddl_file, task_description, rollout)
+        write_regeneration_demo_group(f, bddl_file, task_description, rollout, success)
 
     return hdf5_path
 

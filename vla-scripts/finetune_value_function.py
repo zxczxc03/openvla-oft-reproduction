@@ -1,5 +1,5 @@
 '''
-ft_value_function.py
+finetune_value_function.py
 
 Fine-tunes SmolVLM to predict value via LoRA
 
@@ -22,7 +22,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import tqdm
 from accelerate import PartialState
 from peft import LoraConfig, PeftModel, get_peft_model
-from transformers import AutoProcessor, Idefics3ForConditionalGeneration
+from transformers import AutoProcessor, AutoModelForVision2Seq
 
 import wandb
 
@@ -48,6 +48,8 @@ class FinetuneConfig:
     dataset_name: str = "libero_spatial_no_noops"    # Dataset whose transform creates value targets
     run_root_dir: Path = Path("runs")                # Path to directory to store logs & checkpoints
     shuffle_buffer_size: int = 100_000               # Dataloader shuffle buffer size (can reduce if OOM errors occur)
+    use_shared_action_bounds: bool = False           # Use mixture-wide action min/max
+    use_shared_proprio_bounds: bool = False          # Use mixture-wide proprio min/max
 
     # Training configuration
     batch_size: int = 8                              # Batch size per device (total batch size = batch_size * num GPUs)
@@ -65,6 +67,8 @@ class FinetuneConfig:
     resume: bool = False                             # If True, resumes from checkpoint
     resume_step: Optional[int] = None                # (When `resume==True`) Step number that we are resuming from
     image_aug: bool = True                           # If True, trains with image augmentations (HIGHLY RECOMMENDED)
+    image_size: int = 512                            # SmolVLM image longest edge; keep RLDS resize and processor aligned
+                                                     #   Default SmolVLM uses 2048, which is wasteful after RLDS resizing
 
     # LoRA
     use_lora: bool = True                            # If True, uses LoRA fine-tuning
@@ -105,6 +109,7 @@ def get_run_id(cfg) -> str:
             f"{cfg.vlm_path.split('/')[-1]}+{cfg.dataset_name}"
             f"+b{cfg.batch_size * cfg.grad_accumulation_steps}"
             f"+lr-{cfg.learning_rate}"
+            f"+img-{cfg.image_size}"
         )
         if cfg.use_lora:
             run_id += f"+lora-r{cfg.lora_rank}+dropout-{cfg.lora_dropout}"
@@ -147,15 +152,13 @@ def log_metrics_to_wandb(metrics: dict, prefix: str, step: int) -> None:
         "loss_value": "Loss",
         "mae": "MAE",
         "rmse": "RMSE",
-        # "pred_value_mean": "Pred Value Mean",
-        # "pred_value_min": "Pred Value Min",
-        # "pred_value_max": "Pred Value Max",
-        # "target_value_mean": "Target Value Mean",
-        # "target_value_min": "Target Value Min",
-        # "target_value_max": "Target Value Max",
-        # "gradient_norm": "Gradient Norm",
-        # "learning_rate": "Learning Rate",
-        # "batches_count": "Batches Count",
+        "pred_value_mean": "pred_value_mean",
+        "pred_value_min": "pred value min",
+        "pred_value_max": "pred value max",
+        "target_value_mean": "target value mean",
+        "target_value_min": "target value min",
+        "target_value_max": "target value max"
+        
     }
     wandb.log(
         {f"{prefix}/{display_names.get(name, name.replace('_', ' ').title())}": value for name, value in metrics.items()},
@@ -234,22 +237,25 @@ def run_forward_pass(
         pooled = hidden[
             torch.arange(hidden.shape[0], device=hidden.device),
             last_token_idx,
-        ]
+        ]   
         value_logits = value_head(pooled).squeeze(-1)
 
     pred_value = torch.sigmoid(value_logits.float()) - 1
+    # loss = torch.nn.L1Loss()(ground_truth_values, pred_value)
     loss = F.mse_loss(pred_value, ground_truth_values)
+    # loss = F.smooth_l1_loss(pred_value, ground_truth_values, beta=0.05)
     absolute_error = (pred_value - ground_truth_values).abs()
     metrics = {
         "loss_value": loss.detach().item(),
         "mae": absolute_error.mean().detach().item(),
         "rmse": torch.sqrt(F.mse_loss(pred_value, ground_truth_values)).detach().item(),
-        # "pred_value_mean": pred_value.mean().detach().item(),
-        # "pred_value_min": pred_value.min().detach().item(),
-        # "pred_value_max": pred_value.max().detach().item(),
-        # "target_value_mean": ground_truth_values.mean().detach().item(),
-        # "target_value_min": ground_truth_values.min().detach().item(),
-        # "target_value_max": ground_truth_values.max().detach().item(),
+        "pred_value_mean": pred_value.mean().detach().item(),
+        "pred_value_min": pred_value.min().detach().item(),
+        "pred_value_max": pred_value.max().detach().item(),
+
+        "target_value_mean": ground_truth_values.mean().detach().item(),
+        "target_value_min": ground_truth_values.min().detach().item(),
+        "target_value_max": ground_truth_values.max().detach().item(),
     }
 
     return loss, metrics
@@ -304,7 +310,7 @@ def save_training_checkpoint(
     distributed_state.wait_for_everyone()
 
     if distributed_state.is_main_process and cfg.merge_lora_during_training:
-        base_vlm = Idefics3ForConditionalGeneration.from_pretrained(base_vlm_path, torch_dtype=torch.bfloat16)
+        base_vlm = AutoModelForVision2Seq.from_pretrained(base_vlm_path, torch_dtype=torch.bfloat16)
         base_vlm.resize_token_embeddings(len(processor.tokenizer))
         merged_vlm = PeftModel.from_pretrained(base_vlm, adapter_dir).merge_and_unload()
         merged_vlm.save_pretrained(checkpoint_dir)
@@ -395,9 +401,22 @@ def finetune_value_function(cfg: FinetuneConfig):
         wandb.init(entity=cfg.wandb_entity, project=cfg.wandb_project, name=f"ft+{run_id}", config=wandb_config)
 
     processor_path = str(resume_dir) if resume_dir is not None else base_vlm_path
-    processor = AutoProcessor.from_pretrained(processor_path)
+    processor_kwargs = {}
+    if resume_dir is None:
+        # SmolVLM defaults to longest_edge=2048. For robot observations, we first
+        # resize RLDS frames to `cfg.image_size`, so upsampling them back to 2048
+        # adds visual tokens/GPU memory without adding real image detail.
+        processor_kwargs["size"] = {"longest_edge": cfg.image_size}
+    processor = AutoProcessor.from_pretrained(processor_path, **processor_kwargs)
+    # On resume, the checkpoint's saved processor is authoritative; derive the
+    # dataset resize from it so image preprocessing stays consistent.
+    processor_image_size = getattr(getattr(processor, "image_processor", None), "size", {})
+    if isinstance(processor_image_size, dict):
+        effective_image_size = int(processor_image_size.get("longest_edge", cfg.image_size))
+    else:
+        effective_image_size = int(getattr(processor_image_size, "longest_edge", cfg.image_size))
     processor.tokenizer.padding_side = "right"
-    vlm = Idefics3ForConditionalGeneration.from_pretrained(
+    vlm = AutoModelForVision2Seq.from_pretrained(
         base_vlm_path,
         torch_dtype=torch.bfloat16,
         _attn_implementation="flash_attention_2",
@@ -410,11 +429,14 @@ def finetune_value_function(cfg: FinetuneConfig):
     count_parameters(proprio_projector, "proprio_projector")
 
     proprio_tokens = ["<proprio_0>"]
-    additional_special_tokens = list(processor.tokenizer.additional_special_tokens)
+    additional_special_tokens = list(
+        processor.tokenizer.special_tokens_map.get("additional_special_tokens", [])
+    )
     for token in proprio_tokens:
         if token not in additional_special_tokens:
             additional_special_tokens.append(token)
     processor.tokenizer.add_special_tokens({"additional_special_tokens": additional_special_tokens})
+
     vlm.resize_token_embeddings(len(processor.tokenizer))
     proprio_token_id = processor.tokenizer.convert_tokens_to_ids(proprio_tokens[0])
 
@@ -428,7 +450,7 @@ def finetune_value_function(cfg: FinetuneConfig):
     else:
         lora_config = LoraConfig(
             r=cfg.lora_rank,
-            lora_alpha=min(cfg.lora_rank, 16),
+            lora_alpha=min(cfg.lora_rank, 32),
             lora_dropout=cfg.lora_dropout,
             target_modules=["down_proj", "o_proj", "k_proj", "q_proj", "gate_proj", "up_proj", "v_proj"],
             init_lora_weights="gaussian",
@@ -463,19 +485,23 @@ def finetune_value_function(cfg: FinetuneConfig):
         cfg.data_root_dir,
         cfg.dataset_name,
         batch_transform,
-        resize_resolution=(256, 256),
+        resize_resolution=(effective_image_size, effective_image_size),
         shuffle_buffer_size=cfg.shuffle_buffer_size,
         image_aug=cfg.image_aug,
+        use_shared_action_bounds=cfg.use_shared_action_bounds,
+        use_shared_proprio_bounds=cfg.use_shared_proprio_bounds,
     )
     if cfg.use_val_set:
         val_dataset = RLDSValueDataset(
             cfg.data_root_dir,
             cfg.dataset_name,
             batch_transform,
-            resize_resolution=(256, 256),
+            resize_resolution=(effective_image_size, effective_image_size),
             shuffle_buffer_size=max(cfg.shuffle_buffer_size // 10, 1),
             train=False,
             image_aug=False,
+            use_shared_action_bounds=cfg.use_shared_action_bounds,
+            use_shared_proprio_bounds=cfg.use_shared_proprio_bounds,
         )
 
     collator = PaddedCollatorForValueFunction(processor=processor, max_length=512, num_proprio_tokens=1)

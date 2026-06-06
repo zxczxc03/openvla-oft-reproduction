@@ -197,6 +197,9 @@ OXE_NAMED_MIXTURES: Dict[str, List[Tuple[str, float]]] = {
     "libero_spatial_no_noops": [
         ("libero_spatial_no_noops", 1.0),
     ],
+    "libero_plus_mixdata":[
+        ("libero_plus_mixdata", 1.0)
+    ],
     "libero_object_no_noops": [
         ("libero_object_no_noops", 1.0),
     ],
@@ -211,6 +214,12 @@ OXE_NAMED_MIXTURES: Dict[str, List[Tuple[str, float]]] = {
         ("libero_object_no_noops", 1.0),
         ("libero_goal_no_noops", 1.0),
         ("libero_10_no_noops", 1.0),
+    ],
+
+    "libero_plus_spatial": [
+        ("libero_spatial_no_noops", 0.5),
+        ("libero_spatial", 1.0),
+        # ("libero_plus_spatial_recovery", 1.0),
     ],
 
     # === ALOHA Fine-Tuning Datasets ===

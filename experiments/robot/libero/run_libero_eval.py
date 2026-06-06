@@ -101,7 +101,7 @@ class GenerateConfig:
 
     lora_rank: int = 32                              # Rank of LoRA weight matrix (MAKE SURE THIS MATCHES TRAINING!)
 
-    unnorm_key: Union[str, Path] = ""                # Action un-normalization key
+    unnorm_key: Union[str, Path] = ""                # Action/proprio normalization statistics key
 
     load_in_8bit: bool = False                       # (For OpenVLA only) Load with 8-bit quantization
     load_in_4bit: bool = False                       # (For OpenVLA only) Load with 4-bit quantization
@@ -177,16 +177,25 @@ def initialize_model(cfg: GenerateConfig):
 
 
 def check_unnorm_key(cfg: GenerateConfig, model) -> None:
-    """Check that the model contains the action un-normalization key."""
-    # Initialize unnorm_key
-    unnorm_key = cfg.task_suite_name
+    """Select the action/proprio normalization statistics used during evaluation."""
+    # Initialize unnorm_key. For the standard LIBERO checkpoints this matches
+    # the task suite; for custom fine-tuned datasets it can be provided by CLI.
+    if cfg.unnorm_key:
+        unnorm_key = str(cfg.unnorm_key)
+    elif "shared_bounds" in model.norm_stats:
+        unnorm_key = "shared_bounds"
+    else:
+        unnorm_key = cfg.task_suite_name
 
     # In some cases, the key must be manually modified (e.g. after training on a modified version of the dataset
     # with the suffix "_no_noops" in the dataset name)
     if unnorm_key not in model.norm_stats and f"{unnorm_key}_no_noops" in model.norm_stats:
         unnorm_key = f"{unnorm_key}_no_noops"
 
-    assert unnorm_key in model.norm_stats, f"Action un-norm key {unnorm_key} not found in VLA `norm_stats`!"
+    assert unnorm_key in model.norm_stats, (
+        f"Normalization statistics key {unnorm_key} not found in VLA `norm_stats`! "
+        f"Available keys: {list(model.norm_stats.keys())}"
+    )
 
     # Set the unnorm_key in cfg
     cfg.unnorm_key = unnorm_key

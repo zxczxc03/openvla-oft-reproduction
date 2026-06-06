@@ -119,6 +119,8 @@ class RLDSDataset(IterableDataset):
         future_action_window_size: int = NUM_ACTIONS_CHUNK - 1,
         include_value_targets: bool = False,
         goal_relabeling_strategy: str | None = "uniform",
+        use_shared_action_bounds: bool = False,
+        use_shared_proprio_bounds: bool = False,
     ) -> None:
         """Lightweight wrapper around RLDS TFDS Pipeline for use with PyTorch/OpenVLA Data Loaders."""
         self.data_root_dir, self.data_mix, self.batch_transform = data_root_dir, data_mix, batch_transform
@@ -166,6 +168,8 @@ class RLDSDataset(IterableDataset):
             traj_transform_threads=len(mixture_spec),
             traj_read_threads=len(mixture_spec),
             train=train,
+            use_shared_action_bounds=use_shared_action_bounds,
+            use_shared_proprio_bounds=use_shared_proprio_bounds,
         )
 
         # If applicable, enable image augmentations
@@ -216,6 +220,8 @@ class RLDSValueDataset(RLDSDataset):
         shuffle_buffer_size: int = 256_000,
         train: bool = True,
         image_aug: bool = False,
+        use_shared_action_bounds: bool = False,
+        use_shared_proprio_bounds: bool = False,
     ) -> None:
         super().__init__(
             data_root_dir,
@@ -228,6 +234,8 @@ class RLDSValueDataset(RLDSDataset):
             future_action_window_size=0,
             include_value_targets=True,
             goal_relabeling_strategy=None,
+            use_shared_action_bounds=use_shared_action_bounds,
+            use_shared_proprio_bounds=use_shared_proprio_bounds,
         )
 
 
