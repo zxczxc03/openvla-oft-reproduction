@@ -5,9 +5,11 @@ Lightweight PyTorch Dataset Definition for wrapping RLDS TFDS Pipeline; just def
 format to OpenVLA, IterableDataset shim.
 """
 
+import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Tuple, Type
+from typing import Any, Dict, Optional, Tuple, Type, Union
 
 import numpy as np
 import torch
@@ -23,19 +25,126 @@ from prismatic.vla.constants import ACTION_DIM, ACTION_PROPRIO_NORMALIZATION_TYP
 from prismatic.vla.datasets.rlds import make_interleaved_dataset, make_single_dataset
 from prismatic.vla.datasets.rlds.oxe import OXE_NAMED_MIXTURES, get_oxe_dataset_kwargs_and_weights
 
+
+SCENE_PREFIX_RE = re.compile(r"^[a-z_]+_scene\d+_", re.IGNORECASE)
+LIBERO_PLUS_TASK_SUFFIX_RE = re.compile(
+    r"(_view_.*|_moved_level\d+_sample\d+|_level\d+_sample\d+|"
+    r"_initstate_\d+|_(?:add|light|noise|table|tb)_\d+)$",
+    re.IGNORECASE,
+)
+LIBERO_PLUS_TEXT_SUFFIX_RE = re.compile(
+    r"\s+(?:view(?:\s+[-+]?\d+(?:\.\d+)?)+.*|moved\s+level\d+\s+sample\d+|"
+    r"level\d+\s+sample\d+|initstate\s+\d+|(?:add|light|noise|table|tb)\s+\d+)$",
+    re.IGNORECASE,
+)
+
+
+def normalize_libero_language_instruction(language_instruction: str) -> str:
+    """Collapse LIBERO-plus task metadata suffixes while leaving normal instructions unchanged."""
+    language_instruction = " ".join(str(language_instruction).lower().split())
+    if not language_instruction:
+        return language_instruction
+
+    if "_" in language_instruction:
+        task_name = Path(language_instruction).stem
+        had_language_suffix = "_language_" in task_name
+        if had_language_suffix:
+            task_name = task_name.split("_language_", 1)[0]
+        stripped_task_name = LIBERO_PLUS_TASK_SUFFIX_RE.sub("", task_name)
+        if stripped_task_name != task_name or had_language_suffix or " " not in stripped_task_name:
+            stripped_task_name = SCENE_PREFIX_RE.sub("", stripped_task_name)
+            return " ".join(part for part in stripped_task_name.split("_") if part)
+
+    return LIBERO_PLUS_TEXT_SUFFIX_RE.sub("", language_instruction).strip()
+
+
+def _load_dataset_statistics(dataset_statistics: Any) -> Optional[Dict[str, Any]]:
+    if dataset_statistics is None:
+        return None
+    if isinstance(dataset_statistics, (str, Path)):
+        with Path(dataset_statistics).open("r") as f:
+            return json.load(f)
+    return dataset_statistics
+
+
+def _select_dataset_statistics(dataset_statistics: Optional[Dict[str, Any]], dataset_name: str) -> Optional[Dict[str, Any]]:
+    if dataset_statistics is None:
+        return None
+    if dataset_name in dataset_statistics:
+        return dataset_statistics[dataset_name]
+    if "shared_bounds" in dataset_statistics:
+        return dataset_statistics["shared_bounds"]
+    if {"action", "proprio"}.issubset(dataset_statistics):
+        return dataset_statistics
+    raise KeyError(
+        f"Could not find statistics for dataset `{dataset_name}`. "
+        f"Available keys: {sorted(dataset_statistics.keys())}"
+    )
+
+
+def _as_scalar_int(value: Any) -> int:
+    return int(np.asarray(value).reshape(-1)[0])
+
+
+def _decode_scalar_string(value: Any) -> str:
+    scalar = np.asarray(value).reshape(-1)[0]
+    if isinstance(scalar, bytes):
+        return scalar.decode("utf-8")
+    if isinstance(scalar, np.bytes_):
+        return scalar.tobytes().decode("utf-8")
+    return str(scalar)
+
+
+def _current_timestep(observation: Dict[str, Any]) -> int:
+    return int(np.asarray(observation["timestep"]).reshape(-1)[-1])
+
+
+def _semantic_key_from_language(
+    language_instruction: str,
+    quantile_data: Dict[str, float],
+    semantic_task_map: Optional[Dict[str, str]],
+) -> str:
+    normalized_language = " ".join(str(language_instruction).lower().split())
+    if semantic_task_map is not None and normalized_language in semantic_task_map:
+        return semantic_task_map[normalized_language]
+
+    direct_key = normalized_language.replace(" ", "_")
+    if direct_key in quantile_data:
+        return direct_key
+
+    canonical_language = SCENE_PREFIX_RE.sub("", direct_key)
+    canonical_language = LIBERO_PLUS_TASK_SUFFIX_RE.sub("", canonical_language)
+    canonical_language = " ".join(part for part in canonical_language.split("_") if part)
+
+    for quantile_key in quantile_data:
+        canonical_key = SCENE_PREFIX_RE.sub("", str(quantile_key).lower())
+        canonical_key = LIBERO_PLUS_TASK_SUFFIX_RE.sub("", canonical_key)
+        canonical_key = " ".join(part for part in canonical_key.split("_") if part)
+        if canonical_key == canonical_language:
+            return quantile_key
+
+    return direct_key
+
+
 @dataclass
 class RLDSValueBatchTransform:
     def __call__(self, rlds_batch: Dict[str, Any]) -> Dict[str, Any]:
         """Return one current-frame value example without action-token targets."""
-        return {
+        lang = normalize_libero_language_instruction(rlds_batch["task"]["language_instruction"].decode())
+        return_dict = {
             "image_primary": Image.fromarray(rlds_batch["observation"]["image_primary"][0]),
             "image_wrist": Image.fromarray(rlds_batch["observation"]["image_wrist"][0]),
-            "language_instruction": rlds_batch["task"]["language_instruction"].decode().lower(),
+            "language_instruction": lang,
             "proprio": torch.as_tensor(rlds_batch["observation"]["proprio"][0], dtype=torch.float32),
             "reward": torch.as_tensor(rlds_batch["reward"], dtype=torch.float32).squeeze(),
             "return_to_go": torch.as_tensor(rlds_batch["return_to_go"], dtype=torch.float32).squeeze(),
             "dataset_name": rlds_batch["dataset_name"],
         }
+        if "episode_id" in rlds_batch:
+            return_dict["episode_id"] = _as_scalar_int(rlds_batch["episode_id"])
+        if "timestep" in rlds_batch["observation"]:
+            return_dict["timestep"] = _current_timestep(rlds_batch["observation"])
+        return return_dict
 
 
 @dataclass
@@ -47,16 +156,38 @@ class RLDSBatchTransform:
     predict_stop_token: bool = True
     use_wrist_image: bool = False
     use_proprio: bool = False
+    recap: bool = False
+    advantage_data: Optional[Dict[str, Any]] = None
+    quantile_data: Optional[Dict[str, float]] = None
+    recap_positive_datasets: Tuple[str, ...] = ()
+    recap_semantic_task_map: Optional[Dict[str, str]] = None
+    recap_negative_loss_weight: float = 0.0
+
+    def build_prompt(self, lang, action_chunk_string):
+        prompt_builder = self.prompt_builder_fn("openvla")
+
+        conversation = [
+            {"from": "human", "value": f"What action should the robot take to {lang}?"},
+            {"from": "gpt", "value": action_chunk_string},
+        ]
+    
+        for turn in conversation:
+            prompt_builder.add_turn(turn["from"], turn["value"])
+        
+        return prompt_builder.get_prompt()
 
     def __call__(self, rlds_batch: Dict[str, Any]) -> Dict[str, Any]:
+
         """Converts a RLDS batch to the format expected by the OpenVLA collator/models."""
         dataset_name, current_action = rlds_batch["dataset_name"], rlds_batch["action"][0]
+        dataset_name_str = _decode_scalar_string(dataset_name)
         img = Image.fromarray(rlds_batch["observation"]["image_primary"][0])
-        lang = rlds_batch["task"]["language_instruction"].decode().lower()
+        lang = normalize_libero_language_instruction(rlds_batch["task"]["language_instruction"].decode())
         actions = rlds_batch["action"]
+        episode_id = _as_scalar_int(rlds_batch["episode_id"]) if "episode_id" in rlds_batch else None
+        timestep = _current_timestep(rlds_batch["observation"]) if "timestep" in rlds_batch["observation"] else None
 
         # Construct Chat-based Prompt =>> Input is default query + language instruction, output are the action tokens
-        prompt_builder = self.prompt_builder_fn("openvla")
 
         # Get future action chunk
         future_actions = rlds_batch["action"][1:]
@@ -67,15 +198,42 @@ class RLDSBatchTransform:
         action_chunk_string = current_action_string + future_actions_string
         action_chunk_len = len(action_chunk_string)
 
-        conversation = [
-            {"from": "human", "value": f"What action should the robot take to {lang}?"},
-            {"from": "gpt", "value": action_chunk_string},
-        ]
-        for turn in conversation:
-            prompt_builder.add_turn(turn["from"], turn["value"])
+        adv = None
+        recap_loss_weight = 1.0
+
+        if self.recap:
+            if dataset_name_str in self.recap_positive_datasets:
+                adv = "positive"
+            else:
+                if episode_id is None or timestep is None:
+                    raise KeyError("RECAP advantage lookup requires `episode_id` and observation `timestep`.")
+                if dataset_name_str not in self.advantage_data:
+                    raise KeyError(f"No RECAP advantage table loaded for dataset `{dataset_name_str}`.")
+
+                key = (episode_id, timestep)
+                try:
+                    advantage, semantic_task = self.advantage_data[dataset_name_str][key]
+                except KeyError as exc:
+                    raise KeyError(
+                        f"No RECAP advantage found for dataset={dataset_name_str}, "
+                        f"episode_id={episode_id}, timestep={timestep}."
+                    ) from exc
+
+                if semantic_task is None:
+                    semantic_task = _semantic_key_from_language(
+                        lang,
+                        self.quantile_data,
+                        self.recap_semantic_task_map,
+                    )
+                if semantic_task not in self.quantile_data:
+                    raise KeyError(f"No RECAP quantile found for semantic task `{semantic_task}`.")
+
+                quantile = self.quantile_data[semantic_task]
+                adv = "positive" if advantage >= quantile else "negative"
+            recap_loss_weight = self.recap_negative_loss_weight if adv == "negative" else 1.0
 
         # Tokenize (w/ `base_tokenizer`)
-        input_ids = self.base_tokenizer(prompt_builder.get_prompt(), add_special_tokens=True).input_ids
+        input_ids = self.base_tokenizer(self.build_prompt(lang, action_chunk_string), add_special_tokens=True).input_ids
         labels = list(input_ids)
 
         # Tensorize =>> Run Image Transform to get `pixel_values` =>> Return
@@ -89,6 +247,13 @@ class RLDSBatchTransform:
             labels[-1] = IGNORE_INDEX
 
         return_dict = dict(pixel_values=pixel_values, input_ids=input_ids, labels=labels, dataset_name=dataset_name, actions=actions)
+        if self.recap:
+            return_dict["recap_loss_weight"] = np.asarray(recap_loss_weight, dtype=np.float32)
+        if episode_id is not None:
+            return_dict["episode_id"] = episode_id
+        if timestep is not None:
+            return_dict["timestep"] = timestep
+
 
         # Add additional inputs
         if self.use_wrist_image:
@@ -118,6 +283,8 @@ class RLDSDataset(IterableDataset):
         image_aug: bool = False,
         future_action_window_size: int = NUM_ACTIONS_CHUNK - 1,
         include_value_targets: bool = False,
+        include_metadata: bool = False,
+        dataset_statistics: Optional[Union[Dict[str, Any], str, Path]] = None,
         goal_relabeling_strategy: str | None = "uniform",
         use_shared_action_bounds: bool = False,
         use_shared_proprio_bounds: bool = False,
@@ -150,6 +317,16 @@ class RLDSDataset(IterableDataset):
         if include_value_targets:
             for dataset_kwargs in per_dataset_kwargs:
                 dataset_kwargs["include_value_targets"] = True
+        if include_metadata:
+            for dataset_kwargs in per_dataset_kwargs:
+                dataset_kwargs["include_metadata"] = True
+        dataset_statistics = _load_dataset_statistics(dataset_statistics)
+        if dataset_statistics is not None:
+            for dataset_kwargs in per_dataset_kwargs:
+                dataset_kwargs["dataset_statistics"] = _select_dataset_statistics(
+                    dataset_statistics,
+                    dataset_kwargs["name"],
+                )
         rlds_config = dict(
             traj_transform_kwargs=dict(
                 window_size=1,                                      # If we wanted to feed / predict more than one step

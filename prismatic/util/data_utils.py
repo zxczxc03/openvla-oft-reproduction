@@ -142,6 +142,9 @@ class PaddedCollatorForValueFunction:
         images = []
         proprios = []
         value_labels = []
+        dataset_names = []
+        episode_ids = []
+        timesteps = []
 
         for instance in instances:
             image_primary = instance["image_primary"]
@@ -157,6 +160,12 @@ class PaddedCollatorForValueFunction:
             images.append(image)
             proprios.append(torch.as_tensor(proprio, dtype=torch.float32))
             value_labels.append(torch.as_tensor(value_label, dtype=torch.float32))
+            if "dataset_name" in instance:
+                dataset_names.append(instance["dataset_name"])
+            if "episode_id" in instance:
+                episode_ids.append(int(instance["episode_id"]))
+            if "timestep" in instance:
+                timesteps.append(int(instance["timestep"]))
 
         inputs = self.processor(
             text=prompts,
@@ -169,7 +178,12 @@ class PaddedCollatorForValueFunction:
 
         inputs["proprio"] = torch.stack(proprios, dim=0)
         inputs["value_label"] = torch.stack(value_labels, dim=0).reshape(-1, 1)
-
+        if dataset_names:
+            inputs["dataset_names"] = dataset_names
+        if episode_ids:
+            inputs["episode_ids"] = torch.tensor(episode_ids, dtype=torch.long)
+        if timesteps:
+            inputs["timesteps"] = torch.tensor(timesteps, dtype=torch.long)
         return inputs
 
 
@@ -226,6 +240,14 @@ class PaddedCollatorForActionPrediction:
         else:
             proprio = None
 
+        if "recap_loss_weight" in instances[0]:
+            recap_loss_weights = torch.tensor(
+                [float(np.asarray(instance["recap_loss_weight"]).reshape(-1)[0]) for instance in instances],
+                dtype=torch.float32,
+            )
+        else:
+            recap_loss_weights = None
+
         output = dict(
             pixel_values=pixel_values,
             proprio=proprio,
@@ -236,4 +258,10 @@ class PaddedCollatorForActionPrediction:
         )
         if dataset_names is not None:
             output["dataset_names"] = dataset_names
+        if "episode_id" in instances[0]:
+            output["episode_ids"] = torch.tensor([int(instance["episode_id"]) for instance in instances], dtype=torch.long)
+        if "timestep" in instances[0]:
+            output["timesteps"] = torch.tensor([int(instance["timestep"]) for instance in instances], dtype=torch.long)
+        if recap_loss_weights is not None:
+            output["recap_loss_weights"] = recap_loss_weights
         return output

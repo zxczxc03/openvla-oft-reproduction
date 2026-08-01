@@ -57,7 +57,7 @@ def chunk_act_obs(traj: Dict, window_size: int, future_action_window_size: int =
     traj["task"] = tf.nest.map_structure(lambda x: tf.gather(x, indices), traj["task"])
     traj["dataset_name"] = tf.gather(traj["dataset_name"], indices)
     traj["absolute_action_mask"] = tf.gather(traj["absolute_action_mask"], indices)
-    for key in ("reward", "return_to_go"):
+    for key in ("reward", "return_to_go", "episode_id"):
         if key in traj:
             traj[key] = tf.gather(traj[key], indices)
 

@@ -24,6 +24,7 @@ import wandb
 # Append current directory so that interpreter can find experiments.robot
 sys.path.append("../..")
 from experiments.robot.libero.libero_utils import (
+    get_initial_states_task_key,
     get_libero_dummy_action,
     get_libero_env,
     get_libero_image,
@@ -61,7 +62,7 @@ class TaskSuite(str, Enum):
 
 # Define max steps for each task suite
 TASK_MAX_STEPS = {
-    TaskSuite.LIBERO_SPATIAL: 220,  # longest training demo has 193 steps
+    TaskSuite.LIBERO_SPATIAL: 250,  # longest training demo has 193 steps
     TaskSuite.LIBERO_OBJECT: 280,  # longest training demo has 254 steps
     TaskSuite.LIBERO_GOAL: 300,  # longest training demo has 270 steps
     TaskSuite.LIBERO_10: 520,  # longest training demo has 505 steps
@@ -114,12 +115,14 @@ class GenerateConfig:
     num_trials_per_task: int = 50                    # Number of rollouts per task
     initial_states_path: str = "DEFAULT"             # "DEFAULT", or path to initial states JSON file
     env_img_res: int = 256                           # Resolution for environment images (not policy input resolution)
+    language_instruction_mode: str = "official"      # "official" cleans LIBERO-plus suffixes; "raw" uses task.language
 
     #################################################################################################################
     # Utils
     #################################################################################################################
     run_id_note: Optional[str] = None                # Extra note to add to end of run ID for logging
     local_log_dir: str = "./experiments/logs"        # Local directory for eval logs
+    save_video: bool = False
 
     use_wandb: bool = False                          # Whether to also log results in Weights & Biases
     wandb_entity: str = "your-wandb-entity"          # Name of WandB entity
@@ -141,6 +144,9 @@ def validate_config(cfg: GenerateConfig) -> None:
 
     # Validate task suite
     assert cfg.task_suite_name in [suite.value for suite in TaskSuite], f"Invalid task suite: {cfg.task_suite_name}"
+    assert cfg.language_instruction_mode in {"official", "raw"}, (
+        "language_instruction_mode must be one of: official, raw"
+    )
 
 
 def initialize_model(cfg: GenerateConfig):
@@ -205,6 +211,7 @@ def setup_logging(cfg: GenerateConfig):
     """Set up logging to file and optionally to wandb."""
     # Create run ID
     run_id = f"EVAL-{cfg.task_suite_name}-{cfg.model_family}-{DATE_TIME}"
+    run_id += f"--lang-{cfg.language_instruction_mode}"
     if cfg.run_id_note is not None:
         run_id += f"--{cfg.run_id_note}"
 
@@ -390,7 +397,12 @@ def run_task(
     initial_states, all_initial_states = load_initial_states(cfg, task_suite, task_id, log_file)
 
     # Initialize environment and get task description
-    env, task_description = get_libero_env(task, cfg.model_family, resolution=cfg.env_img_res)
+    env, task_description = get_libero_env(
+        task,
+        cfg.model_family,
+        resolution=cfg.env_img_res,
+        language_instruction_mode=cfg.language_instruction_mode,
+    )
 
     # Start episodes
     task_episodes, task_successes = 0, 0
@@ -403,7 +415,11 @@ def run_task(
             initial_state = initial_states[episode_idx]
         else:
             # Get keys for fetching initial episode state from JSON
-            initial_states_task_key = task_description.replace(" ", "_")
+            initial_states_task_key = get_initial_states_task_key(
+                all_initial_states,
+                task_description,
+                task.name,
+            )
             episode_key = f"demo_{episode_idx}"
 
             # Skip episode if expert demonstration failed to complete the task
@@ -439,9 +455,10 @@ def run_task(
             total_successes += 1
 
         # Save replay video
-        save_rollout_video(
-            replay_images, total_episodes, success=success, task_description=task_description, log_file=log_file
-        )
+        if cfg.save_video:
+            save_rollout_video(
+                replay_images, total_episodes, success=success, task_description=task_description, log_file=log_file
+            )
 
         # Log results
         log_message(f"Success: {success}", log_file)
@@ -491,6 +508,7 @@ def eval_libero(cfg: GenerateConfig) -> float:
     num_tasks = task_suite.n_tasks
 
     log_message(f"Task suite: {cfg.task_suite_name}", log_file)
+    log_message(f"Language instruction mode: {cfg.language_instruction_mode}", log_file)
 
     # Start evaluation
     total_episodes, total_successes = 0, 0

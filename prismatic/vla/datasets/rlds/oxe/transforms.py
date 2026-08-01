@@ -28,6 +28,10 @@ from prismatic.vla.datasets.rlds.utils.data_utils import (
 )
 
 
+LIBERO_VALUE_RETURN_SCALE = 250.0
+LIBERO_FAILURE_PENALTY = 250.0
+
+
 def bridge_oxe_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
     """
     Applies to version of Bridge V2 in Open X-Embodiment mixture.
@@ -824,6 +828,32 @@ def tdroid_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
     return trajectory
 
 
+def rotate_libero_images_180(trajectory: Dict[str, Any]) -> Dict[str, Any]:
+    def rotate_images(images):
+        if images.dtype == tf.string:
+            def rotate_encoded_image(image):
+                return tf.cond(
+                    tf.equal(tf.strings.length(image), 0),
+                    lambda: image,
+                    lambda: tf.io.encode_png(
+                        tf.reverse(
+                            tf.io.decode_image(image, channels=3, expand_animations=False, dtype=tf.uint8),
+                            axis=[0, 1],
+                        )
+                    ),
+                )
+
+            return tf.map_fn(rotate_encoded_image, images, fn_output_signature=tf.string)
+
+        return tf.reverse(images, axis=[1, 2])
+
+    for image_key in ("image", "wrist_image"):
+        if image_key in trajectory["observation"]:
+            trajectory["observation"][image_key] = rotate_images(trajectory["observation"][image_key])
+
+    return trajectory
+
+
 def libero_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
     # gripper action is in -1 (open)...1 (close) --> clip to 0...1, flip --> +1 = open, 0 = close
 
@@ -843,9 +873,19 @@ def libero_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
     reward = tf.concat([reward[:-1], tf.zeros_like(reward[-1:])], axis=0)
 
     trajectory["reward"] = reward
-    trajectory["return_to_go"] = tf.clip_by_value(tf.cumsum(reward, axis=0, reverse=True) / 500.0, -1.0, 0.0)
+    trajectory["return_to_go"] = tf.clip_by_value(
+        tf.cumsum(reward, axis=0, reverse=True) / LIBERO_VALUE_RETURN_SCALE,
+        -1.0,
+        0.0,
+    )
 
     return trajectory
+
+
+def libero_dataset_transform_custom(trajectory: Dict[str, Any]) -> Dict[str, Any]:
+    trajectory = libero_dataset_transform(trajectory)
+    return rotate_libero_images_180(trajectory)
+
 
 def libero_failure_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
     # gripper action is in -1 (open)...1 (close) --> clip to 0...1, flip --> +1 = open, 0 = close
@@ -863,12 +903,16 @@ def libero_failure_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, An
     trajectory["observation"]["EEF_state"] = trajectory["observation"]["state"][:, :6]
     trajectory["observation"]["gripper_state"] = trajectory["observation"]["state"][:, -2:]  # 2D gripper state
     reward = -tf.ones_like(gripper_action[:, :1])
-    reward = tf.concat([reward[:-1], -100*tf.ones_like(reward[-1:])], axis=0)
+    reward = tf.concat([reward[:-1], -LIBERO_FAILURE_PENALTY * tf.ones_like(reward[-1:])], axis=0)
 
     trajectory["reward"] = reward
-    trajectory["return_to_go"] = tf.clip_by_value(tf.cumsum(reward, axis=0, reverse=True) / 500.0, -1.0, 0.0)
+    trajectory["return_to_go"] = tf.clip_by_value(
+        tf.cumsum(reward, axis=0, reverse=True) / LIBERO_VALUE_RETURN_SCALE,
+        -1.0,
+        0.0,
+    )
 
-    return trajectory
+    return rotate_libero_images_180(trajectory)
 
 
 def aloha_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
@@ -955,8 +999,13 @@ OXE_STANDARDIZATION_TRANSFORMS = {
     "libero_goal_no_noops": libero_dataset_transform,
     "libero_10_no_noops": libero_dataset_transform,
     "libero_4_task_suites_no_noops": libero_dataset_transform,
-    "libero_plus_spatial_recovery": libero_dataset_transform,
     "libero_spatial": libero_dataset_transform,
+    "libero_plus_spatial_supplement": libero_dataset_transform_custom,
+    "libero_plus_spatial_autonomous_success": libero_dataset_transform_custom,
+    "libero_plus_spatial_autonomous_failure": libero_failure_dataset_transform,
+    "libero_plus_spatial_supplement_iter_2": libero_dataset_transform_custom,
+    "libero_plus_spatial_autonomous_success_iter_2": libero_dataset_transform_custom,
+    "libero_plus_spatial_autonomous_failure_iter_2": libero_failure_dataset_transform,
     ### ALOHA fine-tuning datasets
     "aloha1_fold_shorts_20_demos": aloha_dataset_transform,
     "aloha1_fold_shirt_30_demos": aloha_dataset_transform,

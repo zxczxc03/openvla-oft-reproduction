@@ -22,7 +22,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import tqdm
 from accelerate import PartialState
 from peft import LoraConfig, PeftModel, get_peft_model
-from transformers import AutoProcessor, AutoModelForVision2Seq
+from transformers import AutoProcessor, Idefics3ForConditionalGeneration
 
 import wandb
 
@@ -166,6 +166,51 @@ def log_metrics_to_wandb(metrics: dict, prefix: str, step: int) -> None:
     )
 
 
+def decode_dataset_name(value) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 1:
+            return str(value.detach().cpu().item())
+        return str(value.detach().cpu().tolist())
+    return str(value)
+
+
+def value_diagnostic_group(dataset_name: str) -> str:
+    dataset_name = dataset_name.lower()
+    if "failure" in dataset_name or "failed" in dataset_name:
+        return "failure"
+    if "success" in dataset_name:
+        return "success"
+    if "recovery" in dataset_name:
+        return "recovery"
+    return "official"
+
+
+def add_group_value_metrics(metrics: dict, pred_value: torch.Tensor, target_value: torch.Tensor, dataset_names) -> None:
+    grouped_indices = {}
+    for idx, dataset_name in enumerate(dataset_names):
+        group_name = value_diagnostic_group(decode_dataset_name(dataset_name))
+        grouped_indices.setdefault(group_name, []).append(idx)
+
+    for group_name, indices in grouped_indices.items():
+        index = torch.as_tensor(indices, device=pred_value.device)
+        group_pred = pred_value.index_select(0, index)
+        group_target = target_value.index_select(0, index)
+        group_error = (group_pred - group_target).abs()
+        group_prefix = f"{group_name}_"
+
+        metrics[f"{group_prefix}samples"] = len(indices)
+        metrics[f"{group_prefix}mae"] = group_error.mean().detach().item()
+        metrics[f"{group_prefix}rmse"] = torch.sqrt(F.mse_loss(group_pred, group_target)).detach().item()
+        metrics[f"{group_prefix}pred_value_mean"] = group_pred.mean().detach().item()
+        metrics[f"{group_prefix}pred_value_min"] = group_pred.min().detach().item()
+        metrics[f"{group_prefix}pred_value_max"] = group_pred.max().detach().item()
+        metrics[f"{group_prefix}target_value_mean"] = group_target.mean().detach().item()
+        metrics[f"{group_prefix}target_value_min"] = group_target.min().detach().item()
+        metrics[f"{group_prefix}target_value_max"] = group_target.max().detach().item()
+
+
 def load_training_state(checkpoint_dir: Path) -> dict:
     state_path = checkpoint_dir / "training_state.pt"
     if not state_path.exists():
@@ -257,6 +302,8 @@ def run_forward_pass(
         "target_value_min": ground_truth_values.min().detach().item(),
         "target_value_max": ground_truth_values.max().detach().item(),
     }
+    if "dataset_names" in batch:
+        add_group_value_metrics(metrics, pred_value, ground_truth_values, batch["dataset_names"])
 
     return loss, metrics
 
@@ -310,7 +357,7 @@ def save_training_checkpoint(
     distributed_state.wait_for_everyone()
 
     if distributed_state.is_main_process and cfg.merge_lora_during_training:
-        base_vlm = AutoModelForVision2Seq.from_pretrained(base_vlm_path, torch_dtype=torch.bfloat16)
+        base_vlm = Idefics3ForConditionalGeneration.from_pretrained(base_vlm_path, torch_dtype=torch.bfloat16)
         base_vlm.resize_token_embeddings(len(processor.tokenizer))
         merged_vlm = PeftModel.from_pretrained(base_vlm, adapter_dir).merge_and_unload()
         merged_vlm.save_pretrained(checkpoint_dir)
@@ -416,7 +463,7 @@ def finetune_value_function(cfg: FinetuneConfig):
     else:
         effective_image_size = int(getattr(processor_image_size, "longest_edge", cfg.image_size))
     processor.tokenizer.padding_side = "right"
-    vlm = AutoModelForVision2Seq.from_pretrained(
+    vlm = Idefics3ForConditionalGeneration.from_pretrained(
         base_vlm_path,
         torch_dtype=torch.bfloat16,
         _attn_implementation="flash_attention_2",
@@ -533,18 +580,7 @@ def finetune_value_function(cfg: FinetuneConfig):
             step=start_step,
         )
 
-    metric_names = (
-        "loss_value",
-        "mae",
-        "rmse",
-        "pred_value_mean",
-        "pred_value_min",
-        "pred_value_max",
-        "target_value_mean",
-        "target_value_min",
-        "target_value_max",
-    )
-    recent_metrics = {name: deque(maxlen=cfg.grad_accumulation_steps) for name in metric_names}
+    recent_metrics = {}
     global_step = start_step
     last_saved_step = None
 
@@ -565,6 +601,7 @@ def finetune_value_function(cfg: FinetuneConfig):
 
             (loss / cfg.grad_accumulation_steps).backward()
             for metric_name, value in metrics.items():
+                recent_metrics.setdefault(metric_name, deque(maxlen=cfg.grad_accumulation_steps))
                 recent_metrics[metric_name].append(value)
 
             if (batch_idx + 1) % cfg.grad_accumulation_steps != 0:

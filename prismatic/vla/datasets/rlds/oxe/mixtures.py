@@ -219,7 +219,58 @@ OXE_NAMED_MIXTURES: Dict[str, List[Tuple[str, float]]] = {
     "libero_plus_spatial": [
         ("libero_spatial_no_noops", 0.5),
         ("libero_spatial", 1.0),
-        # ("libero_plus_spatial_recovery", 1.0),
+    ],
+
+    "libero_spatial_recovery": [
+        # ("libero_spatial_no_noops", 0.5),
+        ("libero_spatial", 1.0),
+        ("libero_plus_spatial_supplement", 1.5),
+    ],
+
+    "libero_spatial_recovery_minor": [
+        # ("libero_spatial_no_noops", 0.5),
+        ("libero_spatial", 1.0),
+        ("libero_plus_spatial_supplement", 1.0),
+    ],
+
+    "libero_spatial_recovery_ex_minor": [
+        # ("libero_spatial_no_noops", 0.5),
+        ("libero_spatial", 1.0),
+        ("libero_plus_spatial_supplement", 0.5),
+    ],
+
+    "libero_spatial_recap_vf_": [
+        ("libero_spatial", 1.0),
+        ("libero_plus_spatial_supplement", 1.0),
+        ("libero_plus_spatial_autonomous_success", 1.0),
+        ("libero_plus_spatial_autonomous_failure", 2.0),
+    ],
+
+    "libero_spatial_recap": [
+        ("libero_spatial", 1.0),
+        ("libero_plus_spatial_supplement", 2.0),
+        ("libero_plus_spatial_autonomous_success", 1.0),
+        ("libero_plus_spatial_autonomous_failure", 1.0),
+    ],
+
+    "libero_spatial_recap_vf_iter_2": [
+        ("libero_spatial", 1.0),
+        ("libero_plus_spatial_supplement", 1.0),
+        ("libero_plus_spatial_autonomous_success", 1.0),
+        ("libero_plus_spatial_autonomous_failure", 2.0),
+        ("libero_plus_spatial_supplement_iter_2", 2.0),
+        ("libero_plus_spatial_autonomous_success_iter_2", 1.0),
+        ("libero_plus_spatial_autonomous_failure_iter_2", 2.0),
+    ],
+
+    "libero_spatial_recap_iter_2": [
+        ("libero_spatial", 1.0),
+        ("libero_plus_spatial_supplement", 2.0),
+        ("libero_plus_spatial_autonomous_success", 1.0),
+        ("libero_plus_spatial_autonomous_failure", 1.0),
+        ("libero_plus_spatial_supplement_iter_2", 6.0),
+        ("libero_plus_spatial_autonomous_success_iter_2", 1.0),
+        ("libero_plus_spatial_autonomous_failure_iter_2", 1.0),
     ],
 
     # === ALOHA Fine-Tuning Datasets ===

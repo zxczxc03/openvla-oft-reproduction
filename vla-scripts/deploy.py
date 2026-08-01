@@ -86,7 +86,14 @@ class OpenVLAServer:
             instruction = observation["instruction"]
 
             action = get_vla_action(
-                self.cfg, self.vla, self.processor, observation, instruction, action_head=self.action_head, proprio_projector=self.proprio_projector, use_film=self.cfg.use_film,
+                self.cfg,
+                self.vla,
+                self.processor,
+                observation,
+                instruction,
+                action_head=self.action_head,
+                proprio_projector=self.proprio_projector,
+                use_film=self.cfg.use_film,
             )
 
             if double_encode:

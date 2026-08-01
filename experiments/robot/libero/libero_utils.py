@@ -2,10 +2,13 @@
 
 import math
 import os
+import re
+from pathlib import Path
 
 import imageio
 import numpy as np
 import tensorflow as tf
+import libero.libero.envs.bddl_utils as BDDLUtils
 from libero.libero import get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 
@@ -15,13 +18,72 @@ from experiments.robot.robot_utils import (
 )
 
 
-def get_libero_env(task, model_family, resolution=256):
+SCENE_PREFIX_RE = re.compile(r"^[A-Z_]+_SCENE\d+_")
+LIBERO_PLUS_SUFFIX_RE = re.compile(
+    r"(_view_.*|_moved_level\d+_sample\d+|_level\d+_sample\d+|"
+    r"_initstate_\d+|_(?:add|light|noise|table|tb)_\d+)$"
+)
+
+
+def canonical_task_name(task_name: str) -> str:
+    task_stem = Path(task_name).stem
+    if "_language_" in task_stem:
+        task_stem = task_stem.split("_language_", 1)[0]
+    return LIBERO_PLUS_SUFFIX_RE.sub("", task_stem)
+
+
+def language_from_task_name(task_name: str) -> str:
+    base_task = SCENE_PREFIX_RE.sub("", canonical_task_name(task_name))
+    return " ".join(base_task.split("_"))
+
+
+def bddl_language_instruction(bddl_file: str) -> str:
+    return BDDLUtils.get_problem_info(bddl_file)["language_instruction"]
+
+
+def language_bddl_file(task, bddl_file: str) -> Path:
+    bddl_path = Path(bddl_file)
+    if bddl_path.exists():
+        return bddl_path
+    if "_language_" in task.name and "_view_" in task.name:
+        candidate = bddl_path.with_name(f"{task.name.split('_view_', 1)[0]}.bddl")
+        if candidate.exists():
+            return candidate
+    return bddl_path
+
+
+def get_official_task_language(task, bddl_file: str) -> str:
+    if "_language_" in task.name:
+        return bddl_language_instruction(str(language_bddl_file(task, bddl_file)))
+    return language_from_task_name(task.name)
+
+
+def get_task_language(task, bddl_file: str, language_instruction_mode: str = "official") -> str:
+    if language_instruction_mode == "raw":
+        return task.language
+    if language_instruction_mode == "official":
+        return get_official_task_language(task, bddl_file)
+    raise ValueError("language_instruction_mode must be one of: official, raw.")
+
+
+def get_initial_states_task_key(all_initial_states, task_description: str, task_name: str) -> str:
+    candidates = [task_description.replace(" ", "_"), task_name]
+    for key in candidates:
+        if key in all_initial_states:
+            return key
+    raise KeyError(
+        f"Could not find initial states for task. Tried keys: {candidates}. "
+        f"Available keys include: {list(all_initial_states)[:5]}"
+    )
+
+
+def get_libero_env(task, model_family, resolution=256, language_instruction_mode="official", seed=0):
     """Initializes and returns the LIBERO environment, along with the task description."""
-    task_description = task.language
     task_bddl_file = os.path.join(get_libero_path("bddl_files"), task.problem_folder, task.bddl_file)
+    task_description = get_task_language(task, task_bddl_file, language_instruction_mode)
     env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution}
     env = OffScreenRenderEnv(**env_args)
-    env.seed(0)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
+    env.seed(seed)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
     return env, task_description
 
 
