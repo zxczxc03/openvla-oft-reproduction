@@ -1,10 +1,6 @@
 # OpenVLA-OFT: Fine-Tuning, Reproduction, and Improvement
 
-本项目复现了 [OpenVLA-OFT](https://github.com/moojink/openvla-oft)，并参考 π*0.6 中的 RECAP 训练范式，使策略能够同时利用自主执行产生的成功与失败经验，以及人工采集的示范数据进行微调。项目在 LIBERO-Plus 中采集轨迹，通过仿真器重放验证数据，训练视觉—语言价值函数，离线估计每个时间步的 Advantage，并依据各语义任务的 Advantage 阈值进一步微调策略。本实现并非 π*0.6 RECAP 的完整复现，具体差异见[离线优势计算与语义任务优势阈值](#离线优势计算与语义任务优势阈值)。
-
-## 模型权重
-
-LIBERO-Spatial 的 OpenVLA-OFT 模型权重已发布至 Hugging Face：[chaox3/openvla-oft-libero-spatial](https://huggingface.co/chaox3/openvla-oft-libero-spatial)。
+本项目复现了 [OpenVLA-OFT](https://github.com/moojink/openvla-oft)，并参考 π*0.6 中的 RECAP 训练范式，使策略能够同时利用自主执行产生的成功与失败经验，以及人工采集的示范数据进行微调。项目在 LIBERO-Plus 中采集轨迹，通过仿真器重放验证数据，训练视觉—语言价值函数，离线估计每个时间步的 Advantage，并依据各语义任务的 Advantage 阈值进一步微调策略。本实现并非 π*0.6 RECAP 的完整复现，具体差异见[离线优势计算与语义任务优势阈值](#离线优势计算与语义任务优势阈值)。[模型](https://huggingface.co/chaox3/openvla-oft-libero-spatial)
 
 ## 本项目新增内容
 
